@@ -3,6 +3,8 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import time
+from datetime import datetime, timezone
+
 
 REQUEST_DELAY = 0.5 
 
@@ -51,10 +53,64 @@ def parse_catalogue_page(html, page_url):
         next_href = next_link.a["href"]
         next_url = urljoin(page_url, next_href)
 
-    return book_links, next_url    
+    return book_links, next_url   
+
+
+
+def parse_book_page(html, url, source_page):
+    soup = BeautifulSoup(html, "lxml")
+
+    product_main = soup.find("div", class_="product_main")
+    title = product_main.h1.text.strip()
+
+    price_text = product_main.find("p", class_="price_color").text.strip()
+
+    availability_text = product_main.find("p", class_="instock.availability")
+    if availability_text is None:
+        availability_text = product_main.find("p", class_="instock availability")
+    availability_text = availability_text.text.strip()
+
+    rating_tag = product_main.find("p", class_="star-rating")
+    rating_classes = rating_tag["class"]
+    rating_text = [c for c in rating_classes if c != "star-rating"][0]
+
+    description_tag = soup.find("div", id="product_description")
+    if description_tag:
+        description = description_tag.find_next_sibling("p").text.strip()
+    else:
+        description = None
+
+    return {
+        "title": title,
+        "product_url": url,
+        "price_text": price_text,
+        "availability_text": availability_text,
+        "rating_text": rating_text,
+        "description": description,
+        "source_page": source_page,
+        "fetched_at": datetime.now(timezone.utc).isoformat()
+    }
+
+def extract_all_books(book_url_pairs):
+    records = []
+    for i, (url, source_page) in enumerate(book_url_pairs, start=1):
+        cache_key = f"book-{i:03d}.html"
+        was_cached = os.path.exists(os.path.join(CACHE_DIR, cache_key))
+
+        html = fetch(url, cache_key)
+        if not was_cached:
+            time.sleep(REQUEST_DELAY)
+
+        record = parse_book_page(html, url, source_page)
+        records.append(record)
+
+    print(f"detail_pages={len(records)}")
+    return records
+
+
 
 def discover_book_urls():
-    all_book_urls = []
+    all_books = []  # list of (url, source_page) tuples now, not just urls
     page_num = 1
     current_url = "https://books.toscrape.com/catalogue/page-1.html"
     MAX_PAGES = 3
@@ -62,25 +118,33 @@ def discover_book_urls():
     while current_url and page_num <= MAX_PAGES:
         cache_key = f"catalogue-page-{page_num}.html"
         was_cached = os.path.exists(os.path.join(CACHE_DIR, cache_key))
-
         html = fetch(current_url, cache_key)
-
         if not was_cached:
             time.sleep(REQUEST_DELAY)
 
         book_links, next_url = parse_catalogue_page(html, current_url)
-        all_book_urls.extend(book_links)
+        for link in book_links:
+            all_books.append((link, current_url))
 
         current_url = next_url
         page_num += 1
 
-    unique_urls = list(dict.fromkeys(all_book_urls))
+    seen = set()
+    unique_books = []
+    for url, source in all_books:
+        if url not in seen:
+            seen.add(url)
+            unique_books.append((url, source))
 
     print(f"catalogue_pages={min(page_num - 1, MAX_PAGES)}")
-    print(f"discovered={len(all_book_urls)}")
-    print(f"unique_urls={len(unique_urls)}")
+    print(f"discovered={len(all_books)}")
+    print(f"unique_urls={len(unique_books)}")
 
-    return unique_urls
+    return unique_books  # now returns (url, source_page) pairs
+
+
 
 if __name__ == "__main__":
-    urls = discover_book_urls()
+    book_urls = discover_book_urls()
+    records = extract_all_books(book_urls)
+    print(records[0])
