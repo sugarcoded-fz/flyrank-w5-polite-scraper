@@ -4,6 +4,10 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 import time
 from datetime import datetime, timezone
+from pydantic import BaseModel, HttpUrl, field_validator
+from typing import Optional
+import re
+import json
 
 
 REQUEST_DELAY = 0.5 
@@ -13,6 +17,81 @@ TIMEOUT = 10
 CACHE_DIR = "cache"
 
 os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+
+class BookRecord(BaseModel):
+    title: str
+    product_url: str
+    price_gbp: float
+    price_text: str
+    availability_text: str
+    rating_text: str
+    description: Optional[str] = None
+    source_page: str
+    fetched_at: str
+
+    @field_validator("product_url")
+    @classmethod
+    def must_be_https(cls, v):
+        if not v.startswith("https://"):
+            raise ValueError("product_url must start with https://")
+        return v
+
+    @field_validator("price_gbp")
+    @classmethod
+    def must_be_positive(cls, v):
+        if v <= 0:
+            raise ValueError("price_gbp must be positive")
+        return v
+
+
+
+
+def clean_price(price_text: str) -> float:
+    cleaned = re.sub(r"[^\d.]", "", price_text)
+    return float(cleaned)
+
+def clean_record(raw_record: dict) -> dict:
+    cleaned = dict(raw_record)
+    cleaned["price_gbp"] = clean_price(raw_record["price_text"])
+    return cleaned   
+
+
+def validate_records(raw_records: list[dict]):
+    valid = []
+    invalid = []
+    seen_urls = set()
+
+    for raw in raw_records:
+        cleaned = clean_record(raw)
+
+        if cleaned["product_url"] in seen_urls:
+            invalid.append({"record": raw, "reason": "duplicate product_url"})
+            continue
+
+        try:
+            validated = BookRecord(**cleaned)
+            valid.append(validated.model_dump())
+            seen_urls.add(cleaned["product_url"])
+        except Exception as e:
+            invalid.append({"record": raw, "reason": str(e)})
+
+    return valid, invalid
+
+
+def save_output(valid_records, invalid_records):
+    os.makedirs("output", exist_ok=True)
+
+    with open("output/books.json", "w", encoding="utf-8") as f:
+        json.dump(valid_records, f, indent=2, ensure_ascii=False)
+
+    with open("output/errors.json", "w", encoding="utf-8") as f:
+        json.dump(invalid_records, f, indent=2, ensure_ascii=False)
+
+    print(f"valid={len(valid_records)}  invalid={len(invalid_records)}")
+
+
 
 def fetch(url, cache_key):
     cache_path = os.path.join(CACHE_DIR, cache_key)
@@ -144,7 +223,13 @@ def discover_book_urls():
 
 
 
+# if __name__ == "__main__":
+#     book_urls = discover_book_urls()
+#     records = extract_all_books(book_urls)
+#     print(records[0])
+
 if __name__ == "__main__":
-    book_urls = discover_book_urls()
-    records = extract_all_books(book_urls)
-    print(records[0])
+    book_url_pairs = discover_book_urls()
+    raw_records = extract_all_books(book_url_pairs)
+    valid_records, invalid_records = validate_records(raw_records)
+    save_output(valid_records, invalid_records)    
