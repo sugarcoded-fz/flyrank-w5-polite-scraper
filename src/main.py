@@ -1,5 +1,10 @@
 import os
 import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+import time
+
+REQUEST_DELAY = 0.5 
 
 USER_AGENT = "FlyRankInternshipA9/1.0 (+https://github.com/sugarcoded-fz/flyrank-w5-polite-scraper)"
 TIMEOUT = 10
@@ -28,5 +33,54 @@ def fetch(url, cache_key):
     return html
 
 
+
+
+
+def parse_catalogue_page(html, page_url):
+    soup = BeautifulSoup(html, "lxml")
+
+    book_links = []
+    for article in soup.find_all("article", class_="product_pod"):
+        href = article.h3.a["href"]
+        absolute_url = urljoin(page_url, href)
+        book_links.append(absolute_url)
+
+    next_link = soup.find("li", class_="next")
+    next_url = None
+    if next_link:
+        next_href = next_link.a["href"]
+        next_url = urljoin(page_url, next_href)
+
+    return book_links, next_url    
+
+def discover_book_urls():
+    all_book_urls = []
+    page_num = 1
+    current_url = "https://books.toscrape.com/catalogue/page-1.html"
+    MAX_PAGES = 3
+
+    while current_url and page_num <= MAX_PAGES:
+        cache_key = f"catalogue-page-{page_num}.html"
+        was_cached = os.path.exists(os.path.join(CACHE_DIR, cache_key))
+
+        html = fetch(current_url, cache_key)
+
+        if not was_cached:
+            time.sleep(REQUEST_DELAY)
+
+        book_links, next_url = parse_catalogue_page(html, current_url)
+        all_book_urls.extend(book_links)
+
+        current_url = next_url
+        page_num += 1
+
+    unique_urls = list(dict.fromkeys(all_book_urls))
+
+    print(f"catalogue_pages={min(page_num - 1, MAX_PAGES)}")
+    print(f"discovered={len(all_book_urls)}")
+    print(f"unique_urls={len(unique_urls)}")
+
+    return unique_urls
+
 if __name__ == "__main__":
-    fetch("https://books.toscrape.com/catalogue/page-1.html", "catalogue-page-1.html")
+    urls = discover_book_urls()
